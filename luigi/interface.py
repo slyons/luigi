@@ -39,6 +39,8 @@ from luigi import worker
 from luigi import execution_summary
 from luigi.cmdline_parser import CmdlineParser
 
+from luigi.contrib.sparkcontrib.sparkworker import SparkContextWorker
+
 
 def setup_interface_logging(conf_file=None):
     # use a variable in the function object to determine if it has run before
@@ -105,6 +107,9 @@ class core(task.Config):
     workers = parameter.IntParameter(
         default=1,
         description='Maximum number of parallel tasks to run')
+    spark_worker = parameter.BoolParameter(
+        default=False,
+        description='Use the Spark Context Worker instead of the normal worker')
     logging_conf_file = parameter.Parameter(
         default=None,
         description='Configuration file for logging')
@@ -140,6 +145,8 @@ class _WorkerSchedulerFactory(object):
         return worker.Worker(
             scheduler=scheduler, worker_processes=worker_processes, assistant=assistant)
 
+    def create_spark_worker(self, scheduler, worker_processes, assistant=True, createSparkContext=True):
+        return SparkContextWorker(scheduler=scheduler, worker_processes=worker_processes, assistant=True, createSparkContext=createSparkContext)
 
 def _schedule_and_run(tasks, worker_scheduler_factory=None, override_defaults=None):
     """
@@ -184,8 +191,14 @@ def _schedule_and_run(tasks, worker_scheduler_factory=None, override_defaults=No
             )
         sch = worker_scheduler_factory.create_remote_scheduler(url=url)
 
-    worker = worker_scheduler_factory.create_worker(
-        scheduler=sch, worker_processes=env_params.workers, assistant=env_params.assistant)
+    
+    if env_params.spark_worker:
+        createSparkContext = env_params.workers > 0
+        worker = worker_scheduler_factory.create_spark_worker(
+            scheduler=sch, worker_processes=env_params.workers, assistant=env_params.assistant, createSparkContext=createSparkContext)
+    else:
+        worker = worker_scheduler_factory.create_worker(
+            scheduler=sch, worker_processes=env_params.workers, assistant=env_params.assistant)
 
     success = True
     logger = logging.getLogger('luigi-interface')
