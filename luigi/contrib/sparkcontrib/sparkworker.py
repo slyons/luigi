@@ -6,7 +6,7 @@ from luigi import notifications
 
 from pyspark import SparkContext, SparkConf
 
-import time, threading, os, logging, json, types
+import time, threading, os, logging, json, types, importlib
 
 logger = logging.getLogger('luigi-interface')
 
@@ -206,7 +206,6 @@ class SparkContextWorker(Worker):
         super(SparkContextWorker, self).__init__(*args, **kwargs)
         self._createSparkContext = createSparkContext
         self._remotes_setup = set()
-
          
     def __enter__(self):
         if self._createSparkContext:
@@ -216,6 +215,7 @@ class SparkContextWorker(Worker):
             self.sparkConfig = conf
             self.sparkContext = SparkContext(conf=self.sparkConfig)
             self.sparkContext.__enter__()
+            self._setup_packages(self.sparkContext)
         return super(SparkContextWorker, self).__enter__()
 
     def __exit__(self, type, value, traceback):
@@ -235,9 +235,6 @@ class SparkContextWorker(Worker):
                 tracking_url=tracking_url,
             )
 
-        if task.name not in self._remotes_setup:
-            task.setup_remote(self.sparkContext)
-
         if isinstance(task, PySparkTask):
             return SparkTaskProcess(task, self._id, self._task_result_queue, self.sparkContext,
                     random_seed=bool(self.worker_processes > 1),
@@ -251,3 +248,25 @@ class SparkContextWorker(Worker):
         args = super(SparkContextWorker, self)._generate_worker_info()
         args += [("sparkworker", True)]
         return args
+
+    def _setup_packages(self, sc):
+        """
+        This method compresses and uploads packages to the cluster
+
+        """
+        packages = configuration.get_config().get('spark', 'py-packages', None)
+        if packages:
+            packages = map(lambda s: s.strip(), packages.split(','))
+            for package in packages:
+                mod = importlib.import_module(package)
+                try:
+                    mod_path = mod.__path__[0]
+                except AttributeError:
+                    mod_path = mod.__file__
+                tar_path = os.path.join(self.run_path, package + '.tar.gz')
+                tar = tarfile.open(tar_path, "w:gz")
+                tar.add(mod_path, os.path.basename(mod_path))
+                tar.close()
+                sc.addPyFile(tar_path)
+
+        
