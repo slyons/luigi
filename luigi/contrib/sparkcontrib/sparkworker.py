@@ -101,7 +101,6 @@ class SparkTaskProcess(ThreadWithExc):
     def _run_get_new_deps(self):
         run_again = False
         try:
-            self.task.setup_remote(self.sparkContext)
             task_gen = self.task.main(self.sparkContext)
         except TypeError as ex:
             if 'unexpected keyword argument' not in getattr(ex, 'message', ex.args[0]):
@@ -206,6 +205,7 @@ class SparkContextWorker(Worker):
         kwargs["assistant"] = True
         super(SparkContextWorker, self).__init__(*args, **kwargs)
         self._createSparkContext = createSparkContext
+        self._remotes_setup = set()
 
          
     def __enter__(self):
@@ -234,6 +234,9 @@ class SparkContextWorker(Worker):
                 status=RUNNING,
                 tracking_url=tracking_url,
             )
+
+        if task.name not in self._remotes_setup:
+            task.setup_remote(self.sparkContext)
 
         if isinstance(task, PySparkTask):
             return SparkTaskProcess(task, self._id, self._task_result_queue, self.sparkContext,
