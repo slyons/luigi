@@ -317,7 +317,7 @@ class PySparkTask(SparkSubmitTask):
         """
 
     def setup_remote(self, sc):
-        if not self.run_path:
+        if not hasattr(self, 'run_path'):
             self.run_path = tempfile.mkdtemp(prefix=self.name)
         self._setup_packages(sc)
 
