@@ -6,7 +6,7 @@ from luigi import notifications, configuration
 
 from pyspark import SparkContext, SparkConf
 
-import time, threading, os, logging, json, types, importlib, tarfile
+import tempfile, time, threading, os, logging, json, types, importlib, tarfile
 
 logger = logging.getLogger('luigi-interface')
 
@@ -216,6 +216,7 @@ class SparkContextWorker(Worker):
             self.sparkContext = SparkContext(conf=self.sparkConfig)
             self.sparkContext.__enter__()
             self._setup_packages(self.sparkContext)
+            self._setup_files(self.sparkContext)
         return super(SparkContextWorker, self).__enter__()
 
     def __exit__(self, type, value, traceback):
@@ -264,10 +265,17 @@ class SparkContextWorker(Worker):
                     mod_path = mod.__path__[0]
                 except AttributeError:
                     mod_path = mod.__file__
-                tar_path = os.path.join(self.run_path, package + '.tar.gz')
+                tar_path = os.path.join(run_path, package + '.tar.gz')
                 tar = tarfile.open(tar_path, "w:gz")
                 tar.add(mod_path, os.path.basename(mod_path))
                 tar.close()
+                logger.info("Adding %s to the SparkContext" % package)
                 sc.addPyFile(tar_path)
 
+    def _setup_files(self, sc):
+        files = configuration.get_config().get('spark', 'files', None)
+        if files:
+            files = map(lambda s: s.strip(), files.split(','))
+            for f in files:
+                sc.addFile(f)
         
