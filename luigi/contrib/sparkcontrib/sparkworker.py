@@ -2,11 +2,11 @@ from luigi.worker import Worker, TaskProcess
 from luigi.scheduler import DISABLED, DONE, FAILED, PENDING
 from luigi.contrib.spark import PySparkTask
 from luigi.event import Event
-from luigi import notifications
+from luigi import notifications, configuration
 
 from pyspark import SparkContext, SparkConf
 
-import time, threading, os, logging, json, types, importlib
+import time, threading, os, logging, json, types, importlib, tarfile
 
 logger = logging.getLogger('luigi-interface')
 
