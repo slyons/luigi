@@ -255,6 +255,7 @@ class SparkContextWorker(Worker):
 
         """
         packages = configuration.get_config().get('spark', 'py-packages', None)
+        run_path = tempfile.mkdtemp(prefix="SparkContextWorker")
         if packages:
             packages = map(lambda s: s.strip(), packages.split(','))
             for package in packages:
