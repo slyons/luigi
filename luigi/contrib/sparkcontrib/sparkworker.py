@@ -5,8 +5,10 @@ from luigi.event import Event
 from luigi import notifications, configuration
 
 from pyspark import SparkContext, SparkConf
+from pyspark.sql import HiveContext
 
-import tempfile, time, threading, os, logging, json, types, importlib, tarfile
+import tempfile, time, threading, os, logging, json, types, importlib, tarfile, inspect, ctypes
+from threading import Timer
 
 logger = logging.getLogger('luigi-interface')
 
@@ -84,9 +86,10 @@ class SparkTaskProcess(ThreadWithExc):
 
     """ Wraps execution of tasks that should share a common Spark context """
 
-    def __init__(self, task, worker_id, result_queue, sparkContext, random_seed=False, worker_timeout=0,
+    def __init__(self, task, worker_id, result_queue, sparkContext, sqlContext, random_seed=False, worker_timeout=0,
                  tracking_url_callback=None):
         self.sparkContext = sparkContext
+        self.sqlContext = sqlContext
         self.task = task
         self.worker_id = worker_id
         self.result_queue = result_queue
@@ -101,13 +104,19 @@ class SparkTaskProcess(ThreadWithExc):
     def _run_get_new_deps(self):
         run_again = False
         try:
-            task_gen = self.task.main(self.sparkContext)
+            if isinstance(self.task, PySparkTask):
+                task_gen = self.task.main(self.sparkContext, self.sqlContext)
+            else:
+                task_gen = self.task.run(tracking_url_callback=self.tracking_url_callback)
         except TypeError as ex:
             if 'unexpected keyword argument' not in getattr(ex, 'message', ex.args[0]):
                 raise
             run_again = True
         if run_again:
-            task_gen = self.task.main(self.sparkContext)
+            if isinstance(self.task, PySparkTask):
+                task_gen = self.task.main(self.sparkContext, self.sqlContext)
+            else:
+                task_gen = self.task.run(tracking_url_callback=self.tracking_url_callback)
         if not isinstance(task_gen, types.GeneratorType):
             return None
 
@@ -193,10 +202,12 @@ class SparkTaskProcess(ThreadWithExc):
         notifications.send_error_email(subject, formatted_error_message, self.task.owner_email)
 
     def terminate(self, timeout=10):
-        start = time.time()
-        while self.is_alive() and time.time() - start < timeout:
-            time.sleep(0.1)
-            task.raiseExc(LuigiSparkTerminationException)
+        self.sparkContext.__exit__(None,None,None,None)
+        pass
+        #start = time.time()
+        #while self.is_alive() and time.time() - start < timeout:
+        #    time.sleep(0.1)
+        #    self.raiseExc(LuigiSparkTerminationException)
 
 
 class SparkContextWorker(Worker):
@@ -206,8 +217,10 @@ class SparkContextWorker(Worker):
         super(SparkContextWorker, self).__init__(*args, **kwargs)
         self._createSparkContext = createSparkContext
         self._remotes_setup = set()
+        self._ping_timer = Timer(5, self._do_ping)
          
     def __enter__(self):
+        self._ping_timer.start()
         if self._createSparkContext:
             import sparkconfig
             conf = SparkConf()
@@ -217,15 +230,27 @@ class SparkContextWorker(Worker):
             self.sparkContext.__enter__()
             self._setup_packages(self.sparkContext)
             self._setup_files(self.sparkContext)
+            self.sqlContext = HiveContext(self.sparkContext)
         return super(SparkContextWorker, self).__enter__()
 
     def __exit__(self, type, value, traceback):
         if self._createSparkContext:
+            del self.sqlContext
             self.sparkContext.__exit__(type, value, traceback)
+
+        self._ping_timer.cancel()
         return super(SparkContextWorker, self).__exit__(type, value, traceback)
 
     def _keep_alive(self, *args):
+        logger.info("Keep alive")
         return True
+
+    def _do_ping(self):
+        try:
+            self._scheduler.ping(worker=self._worker_id)
+            logger.info("Pinged scheduler successfully")
+        except:  # httplib.BadStatusLine:
+            logger.warning('Failed pinging scheduler')
 
     def _create_task_process(self, task):
         def update_tracking_url(tracking_url):
@@ -236,19 +261,25 @@ class SparkContextWorker(Worker):
                 tracking_url=tracking_url,
             )
 
-        if isinstance(task, PySparkTask):
-            return SparkTaskProcess(task, self._id, self._task_result_queue, self.sparkContext,
+        return SparkTaskProcess(task, self._id, self._task_result_queue, self.sparkContext,
+                    self.sqlContext,
                     random_seed=bool(self.worker_processes > 1),
                     worker_timeout=self._config.timeout,
                     tracking_url_callback=update_tracking_url,
             )
-        else:
-            return super(SparkContextWorker, self)._create_task_process(task)
 
     def _generate_worker_info(self):
         args = super(SparkContextWorker, self)._generate_worker_info()
         args += [("sparkworker", True)]
         return args
+
+    def _run_task(self, task_id):
+        task = self._scheduled_tasks[task_id]
+
+        p = self._create_task_process(task)
+
+        self._running_tasks[task_id] = p
+        p.start()
 
     def _setup_packages(self, sc):
         """
